@@ -8,7 +8,7 @@ reviewer = GPT-6.2 Sol via Codex). Never try to pick a model yourself.
 ## Environment
 - `$LOOP_RUN_DIR` holds this run: `task.md`, `plan.md`, `review-latest.md`, numbered step logs.
 - `$LOOP_MAX_ITERATIONS` is the cap on implement→review rounds.
-- You are on a dedicated git branch. The base commit is in `$LOOP_RUN_DIR/base`.
+- You work on the git branch named in `$LOOP_BRANCH` (also in `$LOOP_RUN_DIR/branch`). If `$LOOP_NEW_BRANCH` is `yes`, it is a dedicated `loop/<id>` branch created for this run. Otherwise it is the user's existing branch, so commit only the task's changes and never switch, reset or rebase it. The base commit is in `$LOOP_RUN_DIR/base`.
 
 ## Commands
 - `subagent planner   [--note "extra guidance"]`  → writes `plan.md`
@@ -33,13 +33,18 @@ minutes: always run them with a long Bash timeout (at least 3600000 ms), one at 
       Otherwise continue the loop.
    d. If a subagent fails (non-zero exit), retry it once. If it fails again, stop and report.
 4. Finish:
-   - On APPROVE: `git add -A && git commit -m "<concise summary of the task>"` (the run folder is
-     git-ignored, so `plan.md` and the logs stay out of the commit).
+   - On APPROVE: first run `git status --porcelain=v2 --branch` and read the `# branch.head` line.
+     It must equal `$LOOP_BRANCH` (the name recorded in `$LOOP_RUN_DIR/branch`; Read that file to confirm).
+     If it differs (another branch, or `(detached)`), do NOT commit: record outcome "approved but NOT
+     committed — branch changed from <recorded> to <actual>" in the summary and stop. Otherwise run
+     `git add -A && git commit -m "<concise summary of the task>"` (the run folder is git-ignored, so
+     `plan.md` and the logs stay out of the commit).
    - Write `$LOOP_RUN_DIR/summary.md`: outcome (approved / gave up after N rounds / failed),
-     what changed (files + one line each), unresolved review findings, and suggested next steps.
+     the branch the commit went to, what changed (files + one line each), unresolved review findings, and suggested next steps.
    - Print the summary as your final message.
 
 ## Rules
 - Do not edit project files yourself, except via the git commit in step 4.
+- Never run git switch/checkout/reset/rebase; never commit to a branch other than the recorded one.
 - Do not skip the reviewer, and never approve on the reviewer's behalf.
 - Keep your own messages short: one line per step saying what you launched and the result.

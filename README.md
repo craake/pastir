@@ -11,7 +11,7 @@ you ─► loop "Add rate limiting to /api/login"
           └─► reviewer     GPT-6.2 Sol      (codex, read-only)     → VERDICT: APPROVE | CHANGES_REQUESTED
                  ▲                                   │
                  └──── up to MAX_ITERATIONS ─────────┘
-          on APPROVE: commit on branch loop/<id>, write summary.md
+          on APPROVE: commit on branch loop/<id> (or current branch), write summary.md
 ```
 
 ## Install (inside WSL)
@@ -39,10 +39,11 @@ loop "Add rate limiting to /api/login: 5 attempts/min per IP, 429 with Retry-Aft
 loop -f specs/feature.md            # longer task from a file
 loop --headless "..."               # no TUI; good for unattended runs
 loop --max 5 "..."                  # more review rounds
+loop --current-branch "..."         # work on the branch you're on instead of creating loop/<id>
 ```
 
 What happens:
-1. Creates branch `loop/<timestamp>` and a run folder `.loop/runs/<timestamp>/` (git-ignored locally).
+1. Creates branch `loop/<timestamp>` (or, with `--current-branch` / `NEW_BRANCH=no`, stays on the checked-out branch) and a run folder `.loop/runs/<timestamp>/` (git-ignored locally).
 2. Opens Claude Code (Opus) as the orchestrator, already primed with the procedure. You can watch it
    and type into it at any time to steer it.
 3. The orchestrator runs planner → implementer → reviewer, looping until the reviewer approves or
@@ -68,14 +69,18 @@ Examples:
   accepts those flags and adjust `bin/subagent` (the `omp)` line) if it doesn't.
 - Cheaper orchestrator: `ORCHESTRATOR_MODEL=sonnet`. It only routes work, so Sonnet is usually enough.
 
+Branch behaviour: set `NEW_BRANCH=yes|no` in `roles.conf` to choose the default (`yes` = new `loop/<id>` branch per run; `no` = use the checked-out branch). `--new-branch` / `--current-branch` override it per run. Old installs without the key default to `yes`.
+
 Prompts for each role live in `~/.agent-loop/prompts/*.md`. Edit them to add project rules.
 
 ## Safety notes
 
 - The implementer runs with `--permission-mode bypassPermissions` so it can run tests unattended.
-  It runs on a fresh branch and `loop` refuses to start with uncommitted changes (`--allow-dirty`
-  overrides), but it can still run any shell command in WSL. Tighten `IMPLEMENTER_FLAGS` if needed.
+  By default it runs on a fresh `loop/<id>` branch (with `--current-branch` / `NEW_BRANCH=no` it runs on
+  your checked-out branch instead), and `loop` refuses to start with uncommitted changes (`--allow-dirty`
+  overrides this only in new-branch mode), but it can still run any shell command in WSL. Tighten `IMPLEMENTER_FLAGS` if needed.
 - The planner can't edit files and the reviewer runs in Codex's read-only sandbox.
+- `--current-branch` / `NEW_BRANCH=no` makes the loop commit directly to the branch you're on (including `main`). It refuses to start on a detached HEAD or with any uncommitted or untracked changes, even with `--allow-dirty`, because the final `git add -A` would include them. Commit or stash first. Before committing, the orchestrator checks that the branch is still the one recorded at start and skips the commit if it is not.
 - Nothing is pushed. Review the branch and merge it yourself.
 
 ## Starting from PowerShell (Herdr Windows app)

@@ -5,8 +5,10 @@
 #   -C DIR           project folder (Linux path, ~/path, or Windows path like C:\code\app)
 #   --headless       run the orchestrator non-interactively (claude -p) instead of in the TUI
 #   --max N          max implement→review rounds (default: MAX_ITERATIONS from roles.conf)
-#   --no-branch      stay on the current branch instead of creating loop/<id>
+#   --new-branch     create branch loop/<id> for this run (default; NEW_BRANCH in roles.conf)
+#   --current-branch work and commit on the branch that is checked out now (alias: --no-branch)
 #   --allow-dirty    start even if the working tree has uncommitted changes
+#                    (new-branch mode only; with --current-branch the tree must be clean)
 set -euo pipefail
 
 LOOP_HOME="${LOOP_HOME:-$HOME/.agent-loop}"
@@ -27,11 +29,13 @@ if [[ "${1:-}" == --args-b64 ]]; then
   set -- "${decoded[@]}"
 fi
 
-headless=no; branch=yes; allow_dirty=no; max="$MAX_ITERATIONS"; task=""
+headless=no; branch="${NEW_BRANCH:-yes}"; allow_dirty=no; max="$MAX_ITERATIONS"; task=""
+case "$branch" in yes|no) ;; *) die "NEW_BRANCH in roles.conf must be yes or no (got: $branch)" ;; esac
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --headless)    headless=yes; shift ;;
-    --no-branch)   branch=no; shift ;;
+    --new-branch)  branch=yes; shift ;;
+    --current-branch|--no-branch) branch=no; shift ;;
     --allow-dirty) allow_dirty=yes; shift ;;
     --max)         max="$2"; shift 2 ;;
     -f)            task="$(cat "$2")"; shift 2 ;;
@@ -41,7 +45,7 @@ while [[ $# -gt 0 ]]; do
                    dir="${dir/#\~/$HOME}"                                        # ~/x → /home/you/x
                    cd "$dir" 2>/dev/null || die "folder not found: $dir"
                    shift 2 ;;
-    -h|--help)     sed -n '2,9p' "$0"; exit 0 ;;
+    -h|--help)     sed -n '2,/^set -euo/p' "$0" | sed '$d'; exit 0 ;;
     *)             task="${task:+$task }$1"; shift ;;
   esac
 done
@@ -51,8 +55,24 @@ command -v claude >/dev/null || die "claude CLI not found"
 root=$(git rev-parse --show-toplevel 2>/dev/null) \
   || die "$PWD is not a git repository (run 'git init' there first, or pass -C <project>)"
 cd "$root"
-if [[ $allow_dirty == no && -n "$(git status --porcelain)" ]]; then
-  die "working tree has uncommitted changes (commit/stash them, or pass --allow-dirty)"
+# --untracked-files=all: ignore status.showUntrackedFiles=no; a failing status is an error, not "clean".
+dirty=$(git status --porcelain --untracked-files=all) \
+  || die "git status failed in $root; cannot verify the working tree is clean"
+if [[ -n "$dirty" ]]; then
+  if [[ $branch == no ]]; then
+    die "working tree has uncommitted changes; with --current-branch / NEW_BRANCH=no they must be committed or stashed first (--allow-dirty is not honoured in this mode: the loop's final commit would sweep them onto your branch)"
+  elif [[ $allow_dirty == no ]]; then
+    die "working tree has uncommitted changes (commit/stash them, or pass --allow-dirty)"
+  fi
+fi
+
+# Resolve the branch up front so a detached HEAD fails before anything is created.
+current=""
+if [[ $branch == no ]]; then
+  # Full ref, not --short: a tag with the same name would make --short print "heads/<name>".
+  ref=$(git symbolic-ref --quiet HEAD) \
+    || die "--current-branch needs a checked-out branch, but HEAD is detached (git switch <branch> first)"
+  current=${ref#refs/heads/}
 fi
 
 id=$(date +%Y%m%d-%H%M%S)
@@ -65,17 +85,24 @@ git rev-parse HEAD > "$run/base" 2>/dev/null \
   || git hash-object -t tree /dev/null > "$run/base"   # repo with no commits yet
 
 if [[ $branch == yes ]]; then
-  git switch -c "loop/$id" >/dev/null
-  echo "loop: on branch loop/$id"
+  current="loop/$id"
+  git switch -c "$current" >/dev/null
+  echo "loop: on new branch $current"
+  branch_kind="new, created for this run"
+else
+  echo "loop: using current branch $current (no new branch created; the result will be committed here)"
+  branch_kind="existing, already checked out"
 fi
+printf '%s\n' "$current" > "$run/branch"
 
-export LOOP_HOME LOOP_RUN_DIR="$run" LOOP_MAX_ITERATIONS="$max"
+export LOOP_HOME LOOP_RUN_DIR="$run" LOOP_MAX_ITERATIONS="$max" \
+  LOOP_BRANCH="$current" LOOP_NEW_BRANCH="$branch"
 export PATH="$LOOP_HOME/bin:$PATH"
 # Claude Code caps a Bash call at 10 min by default; subagent runs often take longer.
 export BASH_MAX_TIMEOUT_MS="${BASH_MAX_TIMEOUT_MS:-$((SUBAGENT_TIMEOUT * 1000 + 60000))}"
 export BASH_DEFAULT_TIMEOUT_MS="${BASH_DEFAULT_TIMEOUT_MS:-$BASH_MAX_TIMEOUT_MS}"
 
-kickoff="Start the loop. Task file: $run/task.md. Max iterations: $max."
+kickoff="Start the loop. Task file: $run/task.md. Max iterations: $max. Branch: $current ($branch_kind)."
 sysprompt="$(cat "$LOOP_HOME/prompts/orchestrator.md")"
 tools="Bash(subagent:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git add:*),Bash(git commit:*),Read,Write,Glob,Grep"
 
