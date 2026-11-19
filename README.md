@@ -104,16 +104,3 @@ Or just type `wsl`, `cd` into the project, and run `pastir "..."` as usual.
 The project folder must be a git repository. Re-run `install.sh` if you reinstall or move
 claude/codex: it records their PATH in `~/.pastir/config/path.env`. PowerShell launches and
 the Herdr terminals that subagents open don't read `~/.bashrc`/`~/.zshrc`, so they need it.
-
-## Upgrading from agent-loop
-
-Re-run `bash install.sh`. It installs to `~/.pastir` (or your `LOOP_HOME`), copies your
-`roles.conf` over if the new install has none, removes the old `loop` link and the old PowerShell
-profile block. If you had edited prompts in `~/.agent-loop/prompts/`, the changed files are copied to
-`~/.pastir/prompts.agent-loop-backup/`; the new install uses the stock prompts, so merge your edits
-into `~/.pastir/prompts/` by hand. `~/.agent-loop` itself is left alone. Once you've merged anything
-you need, you can delete it — but only if the installer printed an "Old install at ~/.agent-loop"
-removal hint. It prints nothing when `~/.agent-loop` is still your active install (for example you set
-`LOOP_HOME` to it, or `~/.pastir` is a symlink to it), and in that case you must not delete it.
-The command is now `pastir`, branches are `pastir/<id>`, and run logs go to `.pastir/` (older
-`.loop/` folders in projects can be deleted).
