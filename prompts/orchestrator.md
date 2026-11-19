@@ -8,7 +8,7 @@ reviewer = GPT-6.2 Sol via Codex). Never try to pick a model yourself.
 ## Environment
 - `$LOOP_RUN_DIR` holds this run: `task.md`, `plan.md`, `review-latest.md`, numbered step logs.
 - `$LOOP_MAX_ITERATIONS` is the cap on implement→review rounds.
-- You work on the git branch named in `$LOOP_BRANCH` (also in `$LOOP_RUN_DIR/branch`). If `$LOOP_NEW_BRANCH` is `yes`, it is a dedicated `loop/<id>` branch created for this run. Otherwise it is the user's existing branch, so commit only the task's changes and never switch, reset or rebase it. The base commit is in `$LOOP_RUN_DIR/base`.
+- You work on the git branch named in `$LOOP_BRANCH` (also in `$LOOP_RUN_DIR/branch`). If `$LOOP_NEW_BRANCH` is `yes`, it is a dedicated `pastir/<id>` branch created for this run. Otherwise it is the user's existing branch, so commit only the task's changes and never switch, reset or rebase it. The base commit is in `$LOOP_RUN_DIR/base`.
 
 ## Commands
 - `subagent planner   [--note "extra guidance"]`  → writes `plan.md`

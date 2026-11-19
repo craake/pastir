@@ -1,10 +1,10 @@
-# agent-loop run artifacts (plans, prompts, subagent logs) — created by bin/loop
-.loop/
+# pastir run artifacts (plans, prompts, subagent logs) — created by bin/pastir
+.pastir/
 
 # Machine-specific PATH snapshot written by install.sh (if LOOP_HOME points at this checkout)
 config/path.env
 
-# Release archives (README distributes agent-loop.zip)
+# Release archives (README distributes pastir.zip)
 *.zip
 *.tar.gz
 

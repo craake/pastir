@@ -6,7 +6,9 @@
 # the subagent runs in its own Herdr terminal so you can watch / attach to it.
 set -euo pipefail
 
-LOOP_HOME="${LOOP_HOME:-$HOME/.agent-loop}"
+# Default to the install this executable lives in (resolves the ~/.local/bin symlink), so a custom
+# install dir works from fresh shells and the PowerShell launcher without LOOP_HOME being set.
+LOOP_HOME="${LOOP_HOME:-$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")}"
 # shellcheck source=/dev/null
 source "$LOOP_HOME/config/roles.conf"
 
@@ -28,7 +30,7 @@ case "$role" in
   *) die "usage: subagent <planner|implementer|reviewer> [--note \"...\"]" ;;
 esac
 
-[[ -n "${LOOP_RUN_DIR:-}" && -d "$LOOP_RUN_DIR" ]] || die "LOOP_RUN_DIR not set — start runs with 'loop'"
+[[ -n "${LOOP_RUN_DIR:-}" && -d "$LOOP_RUN_DIR" ]] || die "LOOP_RUN_DIR not set — start runs with 'pastir'"
 command -v "$cli" >/dev/null || die "'$cli' not found on PATH (needed for role $role)"
 RUN="$LOOP_RUN_DIR"
 
@@ -121,7 +123,7 @@ fi
 echo "subagent: $step → $cli/$model$([[ $use_hc == yes ]] && echo " (Herdr terminal via $hc_bin)")" >&2
 if [[ $use_hc == yes ]]; then
   run_id=$(basename "$RUN")                # YYYYMMDD-HHMMSS
-  name="loop-${run_id#*-}-$step"           # hc names are max 32 chars: loop-114905-02-implementer
+  name="pastir-${run_id#*-}-$step"         # hc names are max 32 chars: pastir-114905-02-implementer
   "$hc_bin" run --bg --name "$name" "${launch[@]}" >/dev/null
   "$hc_bin" wait "$name" >/dev/null 2>&1 || true
 fi

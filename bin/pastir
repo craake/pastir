@@ -1,27 +1,32 @@
 #!/usr/bin/env bash
-# loop "task description"          start a plan → implement → review loop in the current repo
-# loop -f task.md                   same, task read from a file
+# pastir "task description"        start a plan → implement → review loop in the current repo
+# pastir -f task.md                 same, task read from a file
 # Options:
 #   -C DIR           project folder (Linux path, ~/path, or Windows path like C:\code\app)
 #   --headless       run the orchestrator non-interactively (claude -p) instead of in the TUI
 #   --max N          max implement→review rounds (default: MAX_ITERATIONS from roles.conf)
-#   --new-branch     create branch loop/<id> for this run (default; NEW_BRANCH in roles.conf)
+#   --new-branch     create branch pastir/<id> for this run (default; NEW_BRANCH in roles.conf)
 #   --current-branch work and commit on the branch that is checked out now (alias: --no-branch)
 #   --allow-dirty    start even if the working tree has uncommitted changes
 #                    (new-branch mode only; with --current-branch the tree must be clean)
 set -euo pipefail
 
-LOOP_HOME="${LOOP_HOME:-$HOME/.agent-loop}"
+# Default to the install this executable lives in (resolves the ~/.local/bin symlink), so a custom
+# install dir works from fresh shells and the PowerShell launcher without LOOP_HOME being set.
+LOOP_HOME="${LOOP_HOME:-$(dirname "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")")}"
+# An explicit relative LOOP_HOME would stop resolving after the cd into the project below.
+_home="$(CDPATH= cd -- "$LOOP_HOME" 2>/dev/null && pwd)" || { echo "pastir: LOOP_HOME not found: $LOOP_HOME" >&2; exit 2; }
+LOOP_HOME=$_home
 # shellcheck source=/dev/null
 source "$LOOP_HOME/config/roles.conf"
-# PATH captured by install.sh: lets `wsl.exe -e .local/bin/loop` from PowerShell find claude/codex
+# PATH captured by install.sh: lets `wsl.exe -e .local/bin/pastir` from PowerShell find claude/codex
 # even though no ~/.bashrc was read.
 # shellcheck source=/dev/null
 [[ -f "$LOOP_HOME/config/path.env" ]] && source "$LOOP_HOME/config/path.env"
 
-die() { echo "loop: $*" >&2; exit 2; }
+die() { echo "pastir: $*" >&2; exit 2; }
 
-# The PowerShell `loop` function (windows/loop.ps1) sends every argument base64-encoded:
+# The PowerShell `pastir` function (windows/pastir.ps1) sends every argument base64-encoded:
 # PowerShell expands `~` in native-command arguments and wsl.exe mangles quotes/apostrophes.
 if [[ "${1:-}" == --args-b64 ]]; then
   shift; decoded=()
@@ -49,7 +54,7 @@ while [[ $# -gt 0 ]]; do
     *)             task="${task:+$task }$1"; shift ;;
   esac
 done
-[[ -n "$task" ]] || die 'usage: loop "what you want built"   (or: loop -f task.md)'
+[[ -n "$task" ]] || die 'usage: pastir "what you want built"   (or: pastir -f task.md)'
 command -v claude >/dev/null || die "claude CLI not found"
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) \
@@ -60,7 +65,7 @@ dirty=$(git status --porcelain --untracked-files=all) \
   || die "git status failed in $root; cannot verify the working tree is clean"
 if [[ -n "$dirty" ]]; then
   if [[ $branch == no ]]; then
-    die "working tree has uncommitted changes; with --current-branch / NEW_BRANCH=no they must be committed or stashed first (--allow-dirty is not honoured in this mode: the loop's final commit would sweep them onto your branch)"
+    die "working tree has uncommitted changes; with --current-branch / NEW_BRANCH=no they must be committed or stashed first (--allow-dirty is not honoured in this mode: pastir's final commit would sweep them onto your branch)"
   elif [[ $allow_dirty == no ]]; then
     die "working tree has uncommitted changes (commit/stash them, or pass --allow-dirty)"
   fi
@@ -76,21 +81,21 @@ if [[ $branch == no ]]; then
 fi
 
 id=$(date +%Y%m%d-%H%M%S)
-run="$root/.loop/runs/$id"
+run="$root/.pastir/runs/$id"
 mkdir -p "$run"
-grep -qxF '.loop/' .git/info/exclude 2>/dev/null || echo '.loop/' >> .git/info/exclude
+grep -qxF '.pastir/' .git/info/exclude 2>/dev/null || echo '.pastir/' >> .git/info/exclude
 
 printf '%s\n' "$task" > "$run/task.md"
 git rev-parse HEAD > "$run/base" 2>/dev/null \
   || git hash-object -t tree /dev/null > "$run/base"   # repo with no commits yet
 
 if [[ $branch == yes ]]; then
-  current="loop/$id"
+  current="pastir/$id"
   git switch -c "$current" >/dev/null
-  echo "loop: on new branch $current"
+  echo "pastir: on new branch $current"
   branch_kind="new, created for this run"
 else
-  echo "loop: using current branch $current (no new branch created; the result will be committed here)"
+  echo "pastir: using current branch $current (no new branch created; the result will be committed here)"
   branch_kind="existing, already checked out"
 fi
 printf '%s\n' "$current" > "$run/branch"
@@ -106,8 +111,8 @@ kickoff="Start the loop. Task file: $run/task.md. Max iterations: $max. Branch: 
 sysprompt="$(cat "$LOOP_HOME/prompts/orchestrator.md")"
 tools="Bash(subagent:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git add:*),Bash(git commit:*),Read,Write,Glob,Grep"
 
-echo "loop: run $id → $run"
-echo "loop: orchestrator=claude/$ORCHESTRATOR_MODEL  planner=$PLANNER_CLI/$PLANNER_MODEL  implementer=$IMPLEMENTER_CLI/$IMPLEMENTER_MODEL  reviewer=$REVIEWER_CLI/$REVIEWER_MODEL"
+echo "pastir: run $id → $run"
+echo "pastir: orchestrator=claude/$ORCHESTRATOR_MODEL  planner=$PLANNER_CLI/$PLANNER_MODEL  implementer=$IMPLEMENTER_CLI/$IMPLEMENTER_MODEL  reviewer=$REVIEWER_CLI/$REVIEWER_MODEL"
 
 if [[ $headless == yes ]]; then
   claude -p "$kickoff" --model "$ORCHESTRATOR_MODEL" \
