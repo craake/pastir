@@ -1,0 +1,32 @@
+# agent-loop run artifacts (plans, prompts, subagent logs) — created by bin/loop
+.loop/
+
+# Machine-specific PATH snapshot written by install.sh (if LOOP_HOME points at this checkout)
+config/path.env
+
+# Release archives (README distributes agent-loop.zip)
+*.zip
+*.tar.gz
+
+# Logs / temp files
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+
+# Local environment / secrets
+.env
+.env.*
+
+# Editor / IDE
+.vscode/
+.idea/
+.claude/settings.local.json
+
+# OS clutter
+.DS_Store
+Thumbs.db
+desktop.ini
+*:Zone.Identifier
