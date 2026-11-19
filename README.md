@@ -1,5 +1,13 @@
 # pastir: one-prompt plan → implement → review loop for Herdr + WSL
 
+**pastir** is a CLI that turns a single task prompt into a reviewed, committed change. It runs in
+WSL, works inside Herdr, and can also be launched from PowerShell. A Claude Code orchestrator
+drives a planner (Claude Opus), an implementer (Claude Sonnet) and an independent reviewer
+(GPT-6.2 Sol via Codex), looping until the reviewer approves or the round limit is hit. Only after
+approval does it commit to a local branch; it never pushes, and it keeps every prompt and output in
+the run folder so you can audit it. `roles.conf` sets the model and CLI for each of the three
+subagents.
+
 ```
 you ─► pastir "Add rate limiting to /api/login"
           │
