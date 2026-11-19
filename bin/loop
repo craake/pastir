@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# loop "task description"          start a plan → implement → review loop in the current repo
+# loop -f task.md                   same, task read from a file
+# Options:
+#   --headless       run the orchestrator non-interactively (claude -p) instead of in the TUI
+#   --max N          max implement→review rounds (default: MAX_ITERATIONS from roles.conf)
+#   --no-branch      stay on the current branch instead of creating loop/<id>
+#   --allow-dirty    start even if the working tree has uncommitted changes
+set -euo pipefail
+
+LOOP_HOME="${LOOP_HOME:-$HOME/.agent-loop}"
+# shellcheck source=/dev/null
+source "$LOOP_HOME/config/roles.conf"
+
+die() { echo "loop: $*" >&2; exit 2; }
+
+headless=no; branch=yes; allow_dirty=no; max="$MAX_ITERATIONS"; task=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --headless)    headless=yes; shift ;;
+    --no-branch)   branch=no; shift ;;
+    --allow-dirty) allow_dirty=yes; shift ;;
+    --max)         max="$2"; shift 2 ;;
+    -f)            task="$(cat "$2")"; shift 2 ;;
+    -h|--help)     sed -n '2,9p' "$0"; exit 0 ;;
+    *)             task="${task:+$task }$1"; shift ;;
+  esac
+done
+[[ -n "$task" ]] || die 'usage: loop "what you want built"   (or: loop -f task.md)'
+command -v claude >/dev/null || die "claude CLI not found"
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || die "run inside a git repository"
+cd "$root"
+if [[ $allow_dirty == no && -n "$(git status --porcelain)" ]]; then
+  die "working tree has uncommitted changes (commit/stash them, or pass --allow-dirty)"
+fi
+
+id=$(date +%Y%m%d-%H%M%S)
+run="$root/.loop/runs/$id"
+mkdir -p "$run"
+grep -qxF '.loop/' .git/info/exclude 2>/dev/null || echo '.loop/' >> .git/info/exclude
+
+printf '%s\n' "$task" > "$run/task.md"
+git rev-parse HEAD > "$run/base" 2>/dev/null \
+  || git hash-object -t tree /dev/null > "$run/base"   # repo with no commits yet
+
+if [[ $branch == yes ]]; then
+  git switch -c "loop/$id" >/dev/null
+  echo "loop: on branch loop/$id"
+fi
+
+export LOOP_HOME LOOP_RUN_DIR="$run" LOOP_MAX_ITERATIONS="$max"
+export PATH="$LOOP_HOME/bin:$PATH"
+
+kickoff="Start the loop. Task file: $run/task.md. Max iterations: $max."
+sysprompt="$(cat "$LOOP_HOME/prompts/orchestrator.md")"
+tools="Bash(subagent:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git add:*),Bash(git commit:*),Read,Write,Glob,Grep"
+
+echo "loop: run $id → $run"
+echo "loop: orchestrator=claude/$ORCHESTRATOR_MODEL  planner=$PLANNER_CLI/$PLANNER_MODEL  implementer=$IMPLEMENTER_CLI/$IMPLEMENTER_MODEL  reviewer=$REVIEWER_CLI/$REVIEWER_MODEL"
+
+if [[ $headless == yes ]]; then
+  claude -p "$kickoff" --model "$ORCHESTRATOR_MODEL" \
+    --append-system-prompt "$sysprompt" --allowedTools "$tools" | tee "$run/orchestrator.log"
+else
+  # positional prompt first, so the variadic --allowedTools can't swallow it
+  exec claude "$kickoff" --model "$ORCHESTRATOR_MODEL" \
+    --append-system-prompt "$sysprompt" --allowedTools "$tools"
+fi

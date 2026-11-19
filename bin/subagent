@@ -1,0 +1,147 @@
+#!/usr/bin/env bash
+# subagent <planner|implementer|reviewer> [--note "extra instructions"]
+#
+# Runs one subagent with the model mapped to its role in roles.conf, captures its output in
+# $LOOP_RUN_DIR, and prints the result for the orchestrator. If herdr-core (`hc`) is reachable,
+# the subagent runs in its own Herdr terminal so you can watch / attach to it.
+set -euo pipefail
+
+LOOP_HOME="${LOOP_HOME:-$HOME/.agent-loop}"
+# shellcheck source=/dev/null
+source "$LOOP_HOME/config/roles.conf"
+
+die() { echo "subagent: $*" >&2; exit 2; }
+
+role="${1:-}"; shift || true
+note=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --note) note="${2:-}"; shift 2 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+done
+
+case "$role" in
+  planner)     cli="$PLANNER_CLI";     model="$PLANNER_MODEL";     flags="$PLANNER_FLAGS" ;;
+  implementer) cli="$IMPLEMENTER_CLI"; model="$IMPLEMENTER_MODEL"; flags="$IMPLEMENTER_FLAGS" ;;
+  reviewer)    cli="$REVIEWER_CLI";    model="$REVIEWER_MODEL";    flags="$REVIEWER_FLAGS" ;;
+  *) die "usage: subagent <planner|implementer|reviewer> [--note \"...\"]" ;;
+esac
+
+[[ -n "${LOOP_RUN_DIR:-}" && -d "$LOOP_RUN_DIR" ]] || die "LOOP_RUN_DIR not set — start runs with 'loop'"
+command -v "$cli" >/dev/null || die "'$cli' not found on PATH (needed for role $role)"
+RUN="$LOOP_RUN_DIR"
+
+# ── step numbering: 01-planner, 02-implementer, ... ──
+n=$(( $(find "$RUN" -maxdepth 1 -name '[0-9][0-9]-*.out.md' | wc -l) + 1 ))
+step=$(printf '%02d-%s' "$n" "$role")
+prompt="$RUN/$step.prompt.md"
+out="$RUN/$step.out.md"
+log="$RUN/$step.log"
+exitf="$RUN/$step.exit"
+runner="$RUN/$step.sh"
+
+# ── assemble the prompt ──
+section() { [[ -s "$2" ]] && printf '\n\n---\n# %s\n\n' "$1" && cat "$2"; return 0; }
+{
+  cat "$LOOP_HOME/prompts/$role.md"
+  section "Task" "$RUN/task.md"
+  case "$role" in
+    implementer)
+      section "Plan" "$RUN/plan.md"
+      section "Latest code review (fix these findings)" "$RUN/review-latest.md"
+      ;;
+    reviewer)
+      section "Plan" "$RUN/plan.md"
+      last_impl=$(ls "$RUN"/[0-9][0-9]-implementer.out.md 2>/dev/null | tail -1 || true)
+      if [[ -n "$last_impl" ]]; then section "Implementer's report" "$last_impl"; fi
+      git add -N . >/dev/null 2>&1 || true          # make new files visible to the diff
+      git diff --stat "$(cat "$RUN/base")" > "$RUN/$step.diffstat" || true
+      git diff "$(cat "$RUN/base")" > "$RUN/$step.diff" || true
+      section "Diff stat (base → working tree)" "$RUN/$step.diffstat"
+      if [[ $(wc -c < "$RUN/$step.diff") -gt 400000 ]]; then
+        printf '\n\n---\n# Diff\n\nDiff is too large to inline. Run: git diff %s\n' "$(cat "$RUN/base")"
+      else
+        printf '\n\n---\n# Diff\n\n```diff\n'; cat "$RUN/$step.diff"; printf '\n```\n'
+      fi
+      ;;
+  esac
+  if [[ -n "$note" ]]; then printf '\n\n---\n# Orchestrator note\n\n%s\n' "$note"; fi
+} > "$prompt"
+
+# ── build the CLI command (prompt always goes in on stdin) ──
+q() { printf '%q' "$1"; }
+case "$cli" in
+  claude) cmd="claude -p --model $(q "$model") $flags < $(q "$prompt") 2>>$(q "$log") | tee $(q "$out")" ;;
+  codex)  cmd="codex exec -m $(q "$model") $flags -o $(q "$out") - < $(q "$prompt") 2>&1 | tee -a $(q "$log")" ;;
+  omp)    cmd="omp -p --model $(q "$model") $flags < $(q "$prompt") 2>>$(q "$log") | tee $(q "$out")" ;;
+  *) die "unsupported CLI '$cli' for role $role" ;;
+esac
+
+cat > "$runner" <<EOF
+#!/usr/bin/env bash
+cd $(q "$PWD")
+echo "▶ $step  ($cli / $model)"
+$cmd
+code=\${PIPESTATUS[0]}
+echo \$code > $(q "$exitf")
+echo "■ $step finished with exit code \$code"
+EOF
+chmod +x "$runner"
+
+# ── run it: visible Herdr terminal via hc, or inline ──
+# Two ways to reach Herdr:
+#   hc      — herdr-core running inside WSL/Linux
+#   hc.exe  — the Windows Herdr app's herdr-core, called through WSL interop; the new
+#             terminal runs wsl.exe back into this distro so the subagent still runs in Linux
+use_hc=no; hc_bin=""; launch=(bash "$runner")
+if [[ "$USE_HC" != no ]]; then
+  if command -v hc >/dev/null && hc ls >/dev/null 2>&1; then
+    hc_bin=hc
+  elif [[ -n "${WSL_DISTRO_NAME:-}" ]] && command -v hc.exe >/dev/null && hc.exe ls >/dev/null 2>&1; then
+    hc_bin=hc.exe
+    launch=(wsl.exe -d "$WSL_DISTRO_NAME" --cd "$PWD" -e bash "$runner")
+  fi
+  [[ -n "$hc_bin" ]] && use_hc=yes
+  [[ "$USE_HC" == yes && $use_hc == no ]] && die "USE_HC=yes but neither hc nor hc.exe is reachable"
+fi
+
+echo "subagent: $step → $cli/$model$([[ $use_hc == yes ]] && echo " (Herdr terminal via $hc_bin)")" >&2
+if [[ $use_hc == yes ]]; then
+  name="loop-$(basename "$RUN")-$step"
+  "$hc_bin" run --bg --name "$name" "${launch[@]}" >/dev/null
+  "$hc_bin" wait "$name" >/dev/null 2>&1 || true
+fi
+# Inline run, or safety net in case `hc wait` returned early: wait for the exit-code file.
+if [[ $use_hc == no ]]; then
+  timeout "$SUBAGENT_TIMEOUT" bash "$runner" >&2 || true
+else
+  for ((i = 0; i < SUBAGENT_TIMEOUT; i += 5)); do [[ -f "$exitf" ]] && break; sleep 5; done
+fi
+
+code=$(cat "$exitf" 2>/dev/null || echo 124)
+if [[ "$code" == 0 && ! -s "$out" ]]; then code=1; fi   # empty output counts as failure
+
+# ── post-process ──
+verdict=""
+if [[ "$code" == 0 ]]; then
+  case "$role" in
+    planner)  cp "$out" "$RUN/plan.md" ;;
+    reviewer)
+      cp "$out" "$RUN/review-latest.md"
+      verdict=$(grep -Eo 'VERDICT: (APPROVE|CHANGES_REQUESTED)' "$out" | tail -1 || true)
+      [[ -n "$verdict" ]] || verdict="VERDICT: CHANGES_REQUESTED (no verdict line found — treat as not approved)"
+      ;;
+  esac
+fi
+
+# ── report back to the orchestrator ──
+echo "=== $step | $cli/$model | exit $code ==="
+echo "full output: $out"
+if [[ -s "$log" ]]; then echo "log: $log"; fi
+echo
+head -n 200 "$out" 2>/dev/null || true
+lines=$(wc -l < "$out" 2>/dev/null || echo 0)
+if (( lines > 200 )); then echo "… ($lines lines total — read the full file)"; fi
+if [[ -n "$verdict" ]]; then echo; echo "$verdict"; fi
+exit "$code"
