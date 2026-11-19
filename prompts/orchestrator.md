@@ -33,7 +33,8 @@ minutes: always run them with a long Bash timeout (at least 3600000 ms), one at 
       Otherwise continue the loop.
    d. If a subagent fails (non-zero exit), retry it once. If it fails again, stop and report.
 4. Finish:
-   - On APPROVE: delete `plan.md` and then: `git add -A && git commit -m "<concise summary of the task>"`.
+   - On APPROVE: `git add -A && git commit -m "<concise summary of the task>"` (the run folder is
+     git-ignored, so `plan.md` and the logs stay out of the commit).
    - Write `$LOOP_RUN_DIR/summary.md`: outcome (approved / gave up after N rounds / failed),
      what changed (files + one line each), unresolved review findings, and suggested next steps.
    - Print the summary as your final message.

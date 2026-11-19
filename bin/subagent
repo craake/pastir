@@ -71,15 +71,27 @@ section() { [[ -s "$2" ]] && printf '\n\n---\n# %s\n\n' "$1" && cat "$2"; return
 
 # ── build the CLI command (prompt always goes in on stdin) ──
 q() { printf '%q' "$1"; }
+# Absolute path: a Herdr terminal started via hc.exe → wsl.exe is a bare, non-login shell that
+# doesn't read ~/.bashrc/~/.profile, so ~/.local/bin, nvm, npm/bun globals are not on its PATH.
+bin=$(q "$(command -v "$cli")")
 case "$cli" in
-  claude) cmd="claude -p --model $(q "$model") $flags < $(q "$prompt") 2>>$(q "$log") | tee $(q "$out")" ;;
-  codex)  cmd="codex exec -m $(q "$model") $flags -o $(q "$out") - < $(q "$prompt") 2>&1 | tee -a $(q "$log")" ;;
-  omp)    cmd="omp -p --model $(q "$model") $flags < $(q "$prompt") 2>>$(q "$log") | tee $(q "$out")" ;;
+  claude) cmd="$bin -p --model $(q "$model") $flags < $(q "$prompt") 2>>$(q "$log") | tee $(q "$out")" ;;
+  codex)  cmd="$bin exec -m $(q "$model") $flags -o $(q "$out") - < $(q "$prompt") 2>&1 | tee -a $(q "$log")" ;;
+  omp)    cmd="$bin -p --model $(q "$model") $flags < $(q "$prompt") 2>>$(q "$log") | tee $(q "$out")" ;;
   *) die "unsupported CLI '$cli' for role $role" ;;
 esac
 
+# Carry this shell's environment into the runner: PATH (node/bun for the CLIs' shebangs) and any
+# API keys / tool config you export in ~/.bashrc. WSL_INTEROP etc. are session-specific: skip them.
+envfile="$RUN/env.sh"
+if [[ ! -f "$envfile" ]]; then
+  export -p | grep -E '^declare -x (PATH|HOME|USER|LANG|LC_[A-Z]+|SHELL|XDG_[A-Z_]+|SSL_CERT_[A-Z_]+|NODE_[A-Z_]+|NVM_[A-Z_]+|BUN_[A-Z_]+|PNPM_HOME|VOLTA_HOME|ANTHROPIC_[A-Z_]+|CLAUDE_CONFIG_DIR|OPENAI_[A-Z_]+|CODEX_HOME|HTTPS?_PROXY|NO_PROXY|https?_proxy|no_proxy)=' > "$envfile" || true
+  chmod 600 "$envfile"   # may contain API keys
+fi
+
 cat > "$runner" <<EOF
 #!/usr/bin/env bash
+source $(q "$envfile")
 cd $(q "$PWD")
 echo "▶ $step  ($cli / $model)"
 $cmd
@@ -108,7 +120,8 @@ fi
 
 echo "subagent: $step → $cli/$model$([[ $use_hc == yes ]] && echo " (Herdr terminal via $hc_bin)")" >&2
 if [[ $use_hc == yes ]]; then
-  name="loop-$(basename "$RUN")-$step"
+  run_id=$(basename "$RUN")                # YYYYMMDD-HHMMSS
+  name="loop-${run_id#*-}-$step"           # hc names are max 32 chars: loop-114905-02-implementer
   "$hc_bin" run --bg --name "$name" "${launch[@]}" >/dev/null
   "$hc_bin" wait "$name" >/dev/null 2>&1 || true
 fi

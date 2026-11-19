@@ -77,3 +77,24 @@ Prompts for each role live in `~/.agent-loop/prompts/*.md`. Edit them to add pro
   overrides), but it can still run any shell command in WSL. Tighten `IMPLEMENTER_FLAGS` if needed.
 - The planner can't edit files and the reviewer runs in Codex's read-only sandbox.
 - Nothing is pushed. Review the branch and merge it yourself.
+
+## Starting from PowerShell (Herdr Windows app)
+
+`install.sh` adds a `loop` function to your PowerShell profiles (PowerShell 7 and 5.1, between
+`# >>> agent-loop >>>` markers). Open a new PowerShell tab and run:
+
+```powershell
+loop -C ~/projects/myapp "Create relevant .gitignore for this project"
+loop -C \\wsl.localhost\Ubuntu\home\you\myapp "..."   # UNC path to a WSL folder
+loop -C C:\code\myapp "..."                               # Windows folder (slower, via /mnt/c)
+```
+
+`~` means your WSL home. Arguments are base64-encoded on the way into WSL because PowerShell
+rewrites `~` to `C:\Users\<you>` and `wsl.exe` mangles quotes. You don't need to escape anything
+except what PowerShell itself needs (`''` inside single quotes, `""` inside double quotes).
+
+Or just type `wsl`, `cd` into the project, and run `loop "..."` as usual.
+
+The project folder must be a git repository. Re-run `install.sh` if you reinstall or move
+claude/codex: it records their PATH in `~/.agent-loop/config/path.env`. PowerShell launches and
+the Herdr terminals that subagents open don't read `~/.bashrc`/`~/.zshrc`, so they need it.
