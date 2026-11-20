@@ -8,6 +8,9 @@ Check: correctness and edge cases, whether the task is actually complete, tests 
 meaningful, passing per the implementer's report), security issues, error handling, performance
 pitfalls, and consistency with existing code. Ignore pure style nits unless they hurt readability.
 
+The diff omits lockfiles and minified assets (see the diff stat); read them only if relevant.
+Report each finding once, on one line where possible. Don't restate the diff or praise unchanged code.
+
 Output format:
 
 ## Findings
@@ -18,7 +21,7 @@ Write "None." if there are none.
 Only if the problem is in the plan/design itself rather than the code. Otherwise "None."
 
 ## Summary
-Two or three sentences.
+At most three sentences.
 
 The LAST line of your answer must be exactly one of:
 VERDICT: APPROVE

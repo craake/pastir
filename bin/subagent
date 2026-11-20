@@ -33,6 +33,21 @@ esac
 [[ -n "${LOOP_RUN_DIR:-}" && -d "$LOOP_RUN_DIR" ]] || die "LOOP_RUN_DIR not set — start runs with 'pastir'"
 command -v "$cli" >/dev/null || die "'$cli' not found on PATH (needed for role $role)"
 RUN="$LOOP_RUN_DIR"
+# Keys added after the first release: older installs keep their old roles.conf, so default them here.
+lean="${LEAN_CLAUDE:-yes}"
+preview="${OUTPUT_PREVIEW_LINES:-80}"
+# Only a plain non-negative integer is valid (a negative value would make head/tail show nearly
+# everything, a non-number would abort the report); 10# avoids octal parsing of values like 08.
+if [[ $preview =~ ^[0-9]{1,9}$ ]]; then preview=$((10#$preview)); else preview=80; fi
+# Enterprise-managed MCP config conflicts with --strict-mcp-config: leave MCP alone when present.
+# Only the path for the platform Claude runs on counts (Linux/WSL read /etc/claude-code, never the
+# Windows host's copy).
+case "$(uname -s)" in
+  Darwin) managed_file="/Library/Application Support/ClaudeCode/managed-mcp.json" ;;
+  *)      managed_file="/etc/claude-code/managed-mcp.json" ;;
+esac
+managed_mcp=no
+[[ -e $managed_file ]] && managed_mcp=yes
 
 # ── step numbering: 01-planner, 02-implementer, ... ──
 n=$(( $(find "$RUN" -maxdepth 1 -name '[0-9][0-9]-*.out.md' | wc -l) + 1 ))
@@ -57,14 +72,23 @@ section() { [[ -s "$2" ]] && printf '\n\n---\n# %s\n\n' "$1" && cat "$2"; return
       section "Plan" "$RUN/plan.md"
       last_impl=$(ls "$RUN"/[0-9][0-9]-implementer.out.md 2>/dev/null | tail -1 || true)
       if [[ -n "$last_impl" ]]; then section "Implementer's report" "$last_impl"; fi
-      git add -N . >/dev/null 2>&1 || true          # make new files visible to the diff
-      git diff --stat "$(cat "$RUN/base")" > "$RUN/$step.diffstat" || true
-      git diff "$(cat "$RUN/base")" > "$RUN/$step.diff" || true
+      # Run from the repo root: from a subdirectory, `.` would limit the patch to that directory while
+      # the stat (and the reviewer's view of the change) covers the whole repository.
+      root=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+      git -C "$root" add -N . >/dev/null 2>&1 || true          # make new files visible to the diff
+      base=$(cat "$RUN/base")
+      # The stat covers everything, so the reviewer still sees that lockfiles changed; the inline
+      # diff leaves out lockfiles and minified assets, which cost many tokens and carry no review signal.
+      git -C "$root" diff --stat "$base" > "$RUN/$step.diffstat" || true
+      # exclude,glob + **/ so nested lockfiles (monorepo packages) are skipped too, not just root ones.
+      git -C "$root" diff "$base" -- . ':(exclude)*.lock' ':(exclude,glob)**/package-lock.json' ':(exclude,glob)**/pnpm-lock.yaml' \
+        ':(exclude,glob)**/go.sum' ':(exclude)*.min.js' ':(exclude)*.min.css' > "$RUN/$step.diff" || true
       section "Diff stat (base → working tree)" "$RUN/$step.diffstat"
       if [[ $(wc -c < "$RUN/$step.diff") -gt 400000 ]]; then
-        printf '\n\n---\n# Diff\n\nDiff is too large to inline. Run: git diff %s\n' "$(cat "$RUN/base")"
+        # Point at the saved filtered diff, not a fresh `git diff`, which would bring lockfiles back in.
+        printf '\n\n---\n# Diff\n\nDiff is too large to inline (lockfiles and minified assets already omitted). It is saved at %s — read it in sections (e.g. with offset/limit, or per file), not all at once. The diff stat above lists every changed file.\n' "$RUN/$step.diff"
       else
-        printf '\n\n---\n# Diff\n\n```diff\n'; cat "$RUN/$step.diff"; printf '\n```\n'
+        printf '\n\n---\n# Diff (lockfiles and minified assets omitted; see diff stat)\n\n```diff\n'; cat "$RUN/$step.diff"; printf '\n```\n'
       fi
       ;;
   esac
@@ -77,7 +101,26 @@ q() { printf '%q' "$1"; }
 # doesn't read ~/.bashrc/~/.profile, so ~/.local/bin, nvm, npm/bun globals are not on its PATH.
 bin=$(q "$(command -v "$cli")")
 case "$cli" in
-  claude) cmd="$bin -p --model $(q "$model") $flags < $(q "$prompt") 2>>$(q "$log") | tee $(q "$out")" ;;
+  claude)
+    # Lean: no MCP servers and no skills/slash commands, whose schemas and listings are re-sent on
+    # every request. CLAUDE.md still loads. Placed before $flags so roles.conf flags can override.
+    # Only flags the installed CLI lists are added (older versions lack e.g. --disable-slash-commands).
+    lean_args=""
+    if [[ $lean == yes ]]; then
+      help_txt=$("$cli" --help 2>&1 || true)
+      if grep -q -- '--disable-slash-commands' <<<"$help_txt"; then lean_args="--disable-slash-commands"; fi
+      # The built-in Chrome MCP server is added outside --strict-mcp-config, so turn it off explicitly.
+      if grep -q -- '--no-chrome' <<<"$help_txt"; then lean_args="--no-chrome $lean_args"; fi
+      if [[ $managed_mcp != yes ]] && grep -q -- '--strict-mcp-config' <<<"$help_txt"; then
+        lean_args="--strict-mcp-config $lean_args"
+      elif grep -q -- '--disallowedTools' <<<"$help_txt"; then
+        # MCP servers can still load here (managed config, or the CLI lacks --strict-mcp-config):
+        # deny every MCP tool so none of their schemas are sent. (q: keep the * from globbing.)
+        lean_args="--disallowedTools $(q 'mcp__*') $lean_args"
+      fi
+    fi
+    # $flags is spliced in unquoted on purpose: the runner expands it exactly as before.
+    cmd="$bin -p --model $(q "$model") $lean_args $flags < $(q "$prompt") 2>>$(q "$log") | tee $(q "$out")" ;;
   codex)  cmd="$bin exec -m $(q "$model") $flags -o $(q "$out") - < $(q "$prompt") 2>&1 | tee -a $(q "$log")" ;;
   omp)    cmd="$bin -p --model $(q "$model") $flags < $(q "$prompt") 2>>$(q "$log") | tee $(q "$out")" ;;
   *) die "unsupported CLI '$cli' for role $role" ;;
@@ -129,7 +172,9 @@ if [[ $use_hc == yes ]]; then
 fi
 # Inline run, or safety net in case `hc wait` returned early: wait for the exit-code file.
 if [[ $use_hc == no ]]; then
-  timeout "$SUBAGENT_TIMEOUT" bash "$runner" >&2 || true
+  # Not >&2: the orchestrator's Bash tool captures stderr, so the subagent's whole transcript would
+  # land in its context (and then again via the preview below). $step.out.md holds the result.
+  timeout "$SUBAGENT_TIMEOUT" bash "$runner" > "$RUN/$step.console" 2>&1 || true
 else
   for ((i = 0; i < SUBAGENT_TIMEOUT; i += 5)); do [[ -f "$exitf" ]] && break; sleep 5; done
 fi
@@ -138,14 +183,25 @@ code=$(cat "$exitf" 2>/dev/null || echo 124)
 if [[ "$code" == 0 && ! -s "$out" ]]; then code=1; fi   # empty output counts as failure
 
 # ── post-process ──
-verdict=""
+verdict=""; verdict_note=""
 if [[ "$code" == 0 ]]; then
   case "$role" in
     planner)  cp "$out" "$RUN/plan.md" ;;
     reviewer)
-      cp "$out" "$RUN/review-latest.md"
-      verdict=$(grep -Eo 'VERDICT: (APPROVE|CHANGES_REQUESTED)' "$out" | tail -1 || true)
-      [[ -n "$verdict" ]] || verdict="VERDICT: CHANGES_REQUESTED (no verdict line found — treat as not approved)"
+      # Only the LAST non-blank line counts, and it must be exactly one of the two verdicts. A
+      # "VERDICT: APPROVE" quoted anywhere in the body (e.g. inside a finding) must never approve.
+      last=$(grep -v '^[[:space:]]*$' "$out" | tail -n 1 || true)
+      last=${last#"${last%%[![:space:]]*}"}; last=${last%"${last##*[![:space:]]}"}
+      case "$last" in
+        "VERDICT: APPROVE"|"VERDICT: CHANGES_REQUESTED")
+          verdict="$last"; cp "$out" "$RUN/review-latest.md" ;;
+        *)
+          # Malformed review: do NOT publish it. Overwriting review-latest.md would hand the
+          # implementer a review that may hold no actionable findings (or lose the previous good one).
+          # Fail so the orchestrator retries the reviewer; the raw output stays in $out.
+          code=3
+          verdict_note="error: reviewer's final line was not a valid verdict (missing/malformed); review-latest.md left unchanged — re-run the reviewer" ;;
+      esac
       ;;
   esac
 fi
@@ -154,9 +210,34 @@ fi
 echo "=== $step | $cli/$model | exit $code ==="
 echo "full output: $out"
 if [[ -s "$log" ]]; then echo "log: $log"; fi
+if [[ -s "$RUN/$step.console" ]]; then echo "console: $RUN/$step.console"; fi
 echo
-head -n 200 "$out" 2>/dev/null || true
-lines=$(wc -l < "$out" 2>/dev/null || echo 0)
-if (( lines > 200 )); then echo "… ($lines lines total — read the full file)"; fi
+if [[ -n "$verdict_note" && -z "$verdict" ]]; then echo "$verdict_note"; exit "$code"; fi
+# The verdict is printed once, at the very end — keep it out of the preview and the excerpt below.
+if [[ $role == reviewer ]]; then
+  head -n "$preview" "$out" 2>/dev/null | grep -Ev '^[[:space:]]*VERDICT:' || true
+else
+  head -n "$preview" "$out" 2>/dev/null || true
+fi
+lines=$(grep -c '' "$out" 2>/dev/null || true)   # grep -c '' also counts a final line with no newline
+lines=${lines:-0}
+if (( lines > preview )); then
+  echo "… ($lines lines total — read the full file: $out)"
+  # Never let a blocking/major finding, or the "Plan issues" section (it decides whether the
+  # orchestrator re-runs the planner), fall past the preview cut.
+  if [[ $role == reviewer ]]; then
+    awk -v p="$preview" '
+      /^[ \t]*VERDICT:/ { next }   # printed once at the end
+      /^## /            { sec = ($0 ~ /^## Plan issues/); keep = 0; if (sec && NR > p) hdr = 1 }
+      NR > p && sec     { if (!hdr) { print "## Plan issues (cut off above)"; hdr = 1 } print; next }
+      # A finding runs from its severity-tagged line to the next tagged line or "## " heading;
+      # continuation lines hold the explanation/fix. Only the three real tags start a finding, so a
+      # continuation line that begins with a Markdown link ("[docs](…)") does not end it. The tag
+      # is judged at the start of the line only: a [minor] finding that quotes "[major]" stays hidden.
+      /^[ \t]*([-*][ \t]+)?`?\[(blocking|major|minor)\]/ { keep = ($0 ~ /^[ \t]*([-*][ \t]+)?`?\[(blocking|major)\]/) }
+      NR > p && keep    { print }
+    ' "$out" || true
+  fi
+fi
 if [[ -n "$verdict" ]]; then echo; echo "$verdict"; fi
 exit "$code"

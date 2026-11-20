@@ -109,16 +109,49 @@ export BASH_DEFAULT_TIMEOUT_MS="${BASH_DEFAULT_TIMEOUT_MS:-$BASH_MAX_TIMEOUT_MS}
 
 kickoff="Start the loop. Task file: $run/task.md. Max iterations: $max. Branch: $current ($branch_kind)."
 sysprompt="$(cat "$LOOP_HOME/prompts/orchestrator.md")"
-tools="Bash(subagent:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git add:*),Bash(git commit:*),Read,Write,Glob,Grep"
+tools="Bash(subagent:*),Bash(git status:*),Bash(git diff:*),Bash(git log:*),Bash(git add:*),Bash(git commit:*),Read,Write"
+# Lean orchestrator: no MCP servers, no skills/slash commands, and only the built-in tools it needs
+# (it routes work and never edits code). Their schemas are otherwise re-sent on every request.
+extra=()
+if [[ "${LEAN_CLAUDE:-yes}" == yes ]]; then
+  # Only add flags the installed CLI lists (older versions lack e.g. --disable-slash-commands).
+  help_txt=$(claude --help 2>&1 || true)
+  has_flag() { grep -q -- "$1" <<<"$help_txt"; }
+  has_flag '--disable-slash-commands' && extra+=(--disable-slash-commands)
+  # The built-in Chrome MCP server is added outside --strict-mcp-config, so turn it off explicitly.
+  has_flag '--no-chrome' && extra+=(--no-chrome)
+  # Enterprise-managed MCP config conflicts with --strict-mcp-config: leave MCP alone when present.
+  # Only the path for the platform Claude runs on counts (Linux/WSL read /etc/claude-code, never the
+  # Windows host's copy).
+  case "$(uname -s)" in
+    Darwin) managed_file="/Library/Application Support/ClaudeCode/managed-mcp.json" ;;
+    *)      managed_file="/etc/claude-code/managed-mcp.json" ;;
+  esac
+  managed_mcp=no
+  [[ -e $managed_file ]] && managed_mcp=yes
+  base_tools=Bash,Read,Write
+  if [[ $managed_mcp != yes ]] && has_flag '--strict-mcp-config'; then
+    extra+=(--strict-mcp-config)
+  elif has_flag '--disallowedTools'; then
+    # MCP servers can still load (managed config, or the CLI lacks --strict-mcp-config): deny every
+    # MCP tool so none of their schemas are sent.
+    extra+=(--disallowedTools 'mcp__*')
+  else
+    # No way to block MCP: --tools restricts built-ins, including ToolSearch, so keep it and MCP
+    # schemas stay deferred instead of loading upfront.
+    base_tools=$base_tools,ToolSearch
+  fi
+  has_flag '--tools' && extra+=(--tools "$base_tools")
+fi
 
 echo "pastir: run $id → $run"
 echo "pastir: orchestrator=claude/$ORCHESTRATOR_MODEL  planner=$PLANNER_CLI/$PLANNER_MODEL  implementer=$IMPLEMENTER_CLI/$IMPLEMENTER_MODEL  reviewer=$REVIEWER_CLI/$REVIEWER_MODEL"
 
 if [[ $headless == yes ]]; then
   claude -p "$kickoff" --model "$ORCHESTRATOR_MODEL" \
-    --append-system-prompt "$sysprompt" --allowedTools "$tools" < /dev/null | tee "$run/orchestrator.log"
+    --append-system-prompt "$sysprompt" --allowedTools "$tools" ${extra[@]+"${extra[@]}"} < /dev/null | tee "$run/orchestrator.log"
 else
   # positional prompt first, so the variadic --allowedTools can't swallow it
   exec claude "$kickoff" --model "$ORCHESTRATOR_MODEL" \
-    --append-system-prompt "$sysprompt" --allowedTools "$tools"
+    --append-system-prompt "$sysprompt" --allowedTools "$tools" ${extra[@]+"${extra[@]}"}
 fi

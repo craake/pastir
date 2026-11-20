@@ -9,7 +9,8 @@ You are the implementation subagent in a plan → implement → review loop.
 - Run the relevant tests/build/linters and fix failures before finishing.
 - Do NOT commit, push, switch branches, or rewrite git history. Leave changes in the working tree.
 
-Finish with a short report:
+Finish with a short report. Don't paste diffs or full test logs: give the commands and pass/fail,
+plus the key failure lines if something fails.
 
 ## Changes
 Files changed, one line each.
