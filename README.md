@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="logo.png" alt="Logo" width="500">
+</p>
+
 # pastir: one-prompt plan → implement → review loop for Herdr + WSL
 
 **pastir** is a CLI that turns a single task prompt into a reviewed, committed change. It runs in
@@ -12,7 +16,7 @@ subagents.
 you ─► pastir "Add rate limiting to /api/login"
           │
           ▼
-   Orchestrator (Claude Code, Opus) ── interactive, in your Herdr pane
+   Orchestrator (Claude Code, Sonnet) ── interactive, in your Herdr pane
           │  calls `subagent <role>` (model is fixed by roles.conf, not by the orchestrator)
           ├─► planner      Claude Opus      (read-only)            → plan.md
           ├─► implementer  Claude Sonnet    (edits + runs tests)   → working tree
@@ -52,13 +56,13 @@ pastir --current-branch "..."         # work on the branch you're on instead of 
 
 What happens:
 1. Creates branch `pastir/<timestamp>` (or, with `--current-branch` / `NEW_BRANCH=no`, stays on the checked-out branch) and a run folder `.pastir/runs/<timestamp>/` (git-ignored locally).
-2. Opens Claude Code (Opus) as the orchestrator, already primed with the procedure. You can watch it
+2. Opens Claude Code (Sonnet by default) as the orchestrator, already primed with the procedure. You can watch it
    and type into it at any time to steer it.
 3. The orchestrator runs planner → implementer → reviewer, looping until the reviewer approves or
    the round limit is hit, then commits and writes `summary.md`.
 
 Everything each subagent saw and said is kept in the run folder (`NN-role.prompt.md`,
-`NN-role.out.md`, `NN-role.log`), so you can audit or replay any step.
+`NN-role.out.md`, `NN-role.log`, and `NN-role.console` for inline runs), so you can audit or replay any step.
 
 ## Herdr integration
 
@@ -75,12 +79,22 @@ Examples:
 - Use Oh My Pi for implementation: `IMPLEMENTER_CLI=omp` and `IMPLEMENTER_MODEL=<model id>`.
   `omp` is called as `omp -p --model <id> < prompt`. Confirm with `omp --help` that your version
   accepts those flags and adjust `bin/subagent` (the `omp)` line) if it doesn't.
-- Cheaper orchestrator: `ORCHESTRATOR_MODEL=sonnet`. It only routes work, so Sonnet is usually enough.
+- Stronger orchestrator: `ORCHESTRATOR_MODEL=opus`. Sonnet is the default because the orchestrator only routes work.
 
 Branch behaviour: set `NEW_BRANCH=yes|no` in `roles.conf` to choose the default (`yes` = new `pastir/<id>` branch per run; `no` = use the checked-out branch). `--new-branch` / `--current-branch` override it per run. Old installs without the key default to `yes`.
 
 Prompts for each role live in `~/.pastir/prompts/*.md`. Edit them to add project rules. Re-running `install.sh` replaces them with the shipped versions, so keep a
 copy of your edits.
+
+## Token usage
+
+pastir is set up to keep token use down. Knobs in `roles.conf`:
+- `LEAN_CLAUDE=yes` (default): the orchestrator and Claude subagents start without MCP servers and without skills/slash commands, whose schemas are otherwise re-sent on every request. `CLAUDE.md` still loads. Set `no` if the planner or implementer needs an MCP server. If an enterprise-managed MCP config exists on the platform Claude runs on (`/etc/claude-code/managed-mcp.json` on Linux/WSL, `/Library/Application Support/ClaudeCode/managed-mcp.json` on macOS), `--strict-mcp-config` is skipped because it conflicts with it; every MCP tool is denied instead (`--disallowedTools 'mcp__*'`, when the CLI supports it) and skills/slash commands are still disabled.
+- `OUTPUT_PREVIEW_LINES=80` (default): how much of each subagent's output the orchestrator sees. The full output is always in `NN-role.out.md`, and reviewer blocking/major findings are never cut.
+
+Other savings that are always on: inline subagent output goes to `NN-role.console` instead of the orchestrator's context, lockfiles and minified assets are left out of the diff sent to the reviewer (the diff stat still lists them), and the prompts ask for short plans, reports and reviews.
+
+Existing installs keep their own `~/.pastir/config/roles.conf`, so add these keys there to change them (the defaults above apply when they are absent). `ORCHESTRATOR_MODEL=sonnet` only reaches fresh installs.
 
 ## Safety notes
 
